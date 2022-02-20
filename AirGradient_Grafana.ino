@@ -102,6 +102,7 @@ void setup() {
   } else {
     Serial.print("InfluxDB connection failed: ");
     Serial.println(client.getLastErrorMessage());
+    while(true) {}
   }
 }
 
@@ -159,7 +160,7 @@ void loop() {
       Serial.print("InfluxDB write failed: ");
       Serial.println(client.getLastErrorMessage());
     }
-    delay(21000);
+    delay(51000);
   }
 }
 
