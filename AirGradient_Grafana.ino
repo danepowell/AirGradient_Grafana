@@ -30,41 +30,37 @@ Kits with all required components are available at https://www.airgradient.com/d
 MIT License
 */
 
+// Includes
+#include "SGP30.h"
 #include <AirGradient.h>
-
 #include <WiFiManager.h>
-
 #include <ESP8266WiFi.h>
-
 #include <Wire.h>
-
 #include "SSD1306Wire.h"
-
 #include <InfluxDbClient.h>
 #include <InfluxDbCloud.h>
-
 #include "arduino_secrets.h"
 
+// Setup
 AirGradient ag = AirGradient();
-
+SGP30 SGP;
 SSD1306Wire display(0x3c, SDA, SCL);
+// InfluxDB client instance with preconfigured InfluxCloud certificate
+InfluxDBClient influxDbClient(SECRET_INFLUXDB_URL, SECRET_INFLUXDB_ORG, SECRET_INFLUXDB_BUCKET, SECRET_INFLUXDB_TOKEN, InfluxDbCloud2CACert);
+Point influxPoint("airgradient");
 
-// set sensors that you do not use to false
+// Parameters
 boolean hasPM = true;
 boolean hasCO2 = true;
 boolean hasSHT = true;
-
+boolean hasTVOC = true;
 // set to true to switch PM2.5 from ug/m3 to US AQI
 boolean inUSaqi = false;
-
 // set to true to switch from Celcius to Fahrenheit
 boolean inF = true;
-
 // set to true if you want to connect to wifi. The display will show values only when the sensor has wifi connection
 boolean connectWIFI = true;
-
 boolean displayData = false;
-
 // Set timezone string according to https://www.gnu.org/software/libc/manual/html_node/TZ-Variable.html
 // Examples:
 //  Pacific Time: "PST8PDT"
@@ -73,11 +69,6 @@ boolean displayData = false;
 //  Central Europe: "CET-1CEST,M3.5.0,M10.5.0/3"
 #define TZ_INFO "PST8PDT"
 
-// InfluxDB client instance with preconfigured InfluxCloud certificate
-InfluxDBClient client(SECRET_INFLUXDB_URL, SECRET_INFLUXDB_ORG, SECRET_INFLUXDB_BUCKET, SECRET_INFLUXDB_TOKEN, InfluxDbCloud2CACert);
-
-Point sensor("airgradient");
-
 void setup() {
   Serial.begin(9600);
 
@@ -85,6 +76,21 @@ void setup() {
   display.flipScreenVertically();
   showTextRectangle("Init", String(ESP.getChipId(), HEX), true);
 
+  if (hasTVOC) {
+    if (SGP.isConnected()) {
+      Serial.println("Initializing SGP sensor");
+      SGP.begin();
+      if (SGP.measureTest()) {
+        Serial.println("SGP self-check complete");
+      } else {
+        Serial.println("SGP self-check failed");
+        Serial.print("SGP error code: ");
+        Serial.println(SGP.lastError());
+      }
+    } else {
+      Serial.println("SGP sensor not connected!");
+    }
+  }
   if (hasPM) ag.PMS_Init();
   if (hasCO2) ag.CO2_Init();
   if (hasSHT) ag.TMP_RH_Init(0x44);
@@ -96,12 +102,12 @@ void setup() {
   // Syncing progress and the time will be printed to Serial.
   timeSync(TZ_INFO, "pool.ntp.org", "time.nis.gov");
   // Check server connection
-  if (client.validateConnection()) {
+  if (influxDbClient.validateConnection()) {
     Serial.print("Connected to InfluxDB: ");
-    Serial.println(client.getServerUrl());
+    Serial.println(influxDbClient.getServerUrl());
   } else {
     Serial.print("InfluxDB connection failed: ");
-    Serial.println(client.getLastErrorMessage());
+    Serial.println(influxDbClient.getLastErrorMessage());
     while(true) {}
   }
 }
@@ -112,12 +118,14 @@ void loop() {
     display.displayOff();
   }
 
-  sensor.clearFields();
-  
+  influxPoint.clearFields();
+
+  if (hasTVOC) SGP.measure(false);
+
   if (hasPM) {
     int PM2 = ag.getPM2_Raw();
-    sensor.addField("pm2", PM2);
-    sensor.addField("aqi", PM_TO_AQI_US(PM2));
+    influxPoint.addField("pm2", PM2);
+    influxPoint.addField("aqi", PM_TO_AQI_US(PM2));
 
     if (inUSaqi) {
       showTextRectangle("AQI", String(PM_TO_AQI_US(PM2)), false);
@@ -131,15 +139,16 @@ void loop() {
 
   if (hasCO2) {
     int CO2 = ag.getCO2_Raw();
-    sensor.addField("co2", CO2);
+    // Sometimes get error codes (-1), not sure why.
+    if (CO2 > 0) influxPoint.addField("co2", CO2);
     showTextRectangle("CO2", String(CO2), false);
     delay(3000);
   }
 
   if (hasSHT) {
     TMP_RH result = ag.periodicFetchData();
-    sensor.addField("temp", result.t);
-    sensor.addField("rhum", result.rh);
+    influxPoint.addField("temp", result.t);
+    influxPoint.addField("rhum", result.rh);
 
     if (inF) {
       showTextRectangle(String((result.t * 9 / 5) + 32), String(result.rh) + "%", false);
@@ -150,17 +159,24 @@ void loop() {
     delay(3000);
   }
 
+  if (hasTVOC) {
+    int TVOC = SGP.getTVOC();
+    influxPoint.addField("tvoc", TVOC);
+    showTextRectangle("TVOC", String(TVOC), false);
+    delay(3000);
+  }
+
   // send payload
   if (connectWIFI) {
     // Print what are we exactly writing
     Serial.print("Writing: ");
-    Serial.println(sensor.toLineProtocol());
+    Serial.println(influxPoint.toLineProtocol());
     // Write point
-    if (!client.writePoint(sensor)) {
+    if (!influxDbClient.writePoint(influxPoint)) {
       Serial.print("InfluxDB write failed: ");
-      Serial.println(client.getLastErrorMessage());
+      Serial.println(influxDbClient.getLastErrorMessage());
     }
-    delay(51000);
+    delay(48000);
   }
 }
 
