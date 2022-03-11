@@ -58,6 +58,7 @@ boolean hasTVOC = true;
 boolean inUSaqi = false;
 // set to true to switch from Celcius to Fahrenheit
 boolean inF = true;
+float tempOffsetC = 0;
 // set to true if you want to connect to wifi. The display will show values only when the sensor has wifi connection
 boolean connectWIFI = true;
 boolean displayData = false;
@@ -147,13 +148,14 @@ void loop() {
 
   if (hasSHT) {
     TMP_RH result = ag.periodicFetchData();
-    influxPoint.addField("temp", result.t);
+    float actualTemp = result.t + tempOffsetC;
+    influxPoint.addField("temp", actualTemp);
     influxPoint.addField("rhum", result.rh);
 
     if (inF) {
-      showTextRectangle(String((result.t * 9 / 5) + 32), String(result.rh) + "%", false);
+      showTextRectangle(String((actualTemp * 9 / 5) + 32), String(result.rh) + "%", false);
     } else {
-      showTextRectangle(String(result.t), String(result.rh) + "%", false);
+      showTextRectangle(String(actualTemp), String(result.rh) + "%", false);
     }
 
     delay(3000);
