@@ -1,214 +1,249 @@
 /*
-This is the code for the AirGradient DIY Air Quality Sensor with an ESP8266 Microcontroller.
+This is the code for the AirGradient DIY PRO Air Quality Sensor with an ESP8266 Microcontroller.
 
 It is a high quality sensor showing PM2.5, CO2, Temperature and Humidity on a small display and can send data over Wifi.
 
-For build instructions please visit https://www.airgradient.com/diy/
+Build Instructions: https://www.airgradient.com/open-airgradient/instructions/diy-pro/
 
-Compatible with the following sensors:
-Plantower PMS5003 (Fine Particle Sensor)
-SenseAir S8 (CO2 Sensor)
-SHT30/31 (Temperature/Humidity Sensor)
-
-Please install ESP8266 board manager (tested with version 3.0.0)
+Kits (including a pre-soldered version) are available: https://www.airgradient.com/open-airgradient/kits/
 
 The codes needs the following libraries installed:
-"WifiManager by tzapu, tablatronix" tested with Version 2.0.3-alpha
-"ESP8266 and ESP32 OLED driver for SSD1306 displays by ThingPulse, Fabrice Weinberg" tested with Version 4.1.0
+“WifiManager by tzapu, tablatronix” tested with version 2.0.11-beta
+“U8g2” by oliver tested with version 2.32.15
+“SGP30” by Rob Tilaart tested with Version 0.1.5
+
+Configuration:
+Please set in the code below the configuration parameters.
 
 If you have any questions please visit our forum at https://forum.airgradient.com/
 
-Configuration:
-Please set in the code below which sensor you are using and if you want to connect it to WiFi.
-You can also switch PM2.5 from ug/m3 to US AQI and Celcius to Fahrenheit
-
 If you are a school or university contact us for a free trial on the AirGradient platform.
-https://www.airgradient.com/schools/
-
-Kits with all required components are available at https://www.airgradient.com/diyshop/
+https://www.airgradient.com/
 
 MIT License
+
 */
 
-// Includes
-#include "SGP30.h"
+
 #include <AirGradient.h>
 #include <WiFiManager.h>
 #include <ESP8266WiFi.h>
-#include <Wire.h>
-#include "SSD1306Wire.h"
 #include <InfluxDbClient.h>
 #include <InfluxDbCloud.h>
+// InfluxDB UI -> Load Data -> Client Libraries -> Arduino, choose correct bucket and copy resulting config
 #include "arduino_secrets.h"
+#include <ESP8266HTTPClient.h>
+#include <WiFiClient.h>
 
-// Setup
+#include "SGP30.h"
+#include <U8g2lib.h>
+
 AirGradient ag = AirGradient();
 SGP30 SGP;
-SSD1306Wire display(0x3c, SDA, SCL);
-// InfluxDB client instance with preconfigured InfluxCloud certificate
-InfluxDBClient influxDbClient(SECRET_INFLUXDB_URL, SECRET_INFLUXDB_ORG, SECRET_INFLUXDB_BUCKET, SECRET_INFLUXDB_TOKEN, InfluxDbCloud2CACert);
+InfluxDBClient influxDbClient(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN, InfluxDbCloud2CACert);
 Point influxPoint("airgradient");
 
-// Parameters
-boolean hasPM = true;
-boolean hasCO2 = true;
-boolean hasSHT = true;
-boolean hasTVOC = true;
-// set to true to switch PM2.5 from ug/m3 to US AQI
-boolean inUSaqi = false;
+// Display bottom right
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// Replace above if you have display on top left
+//U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R3, /* reset=*/ U8X8_PIN_NONE);
+
+
+// CONFIGURATION START
+
 // set to true to switch from Celcius to Fahrenheit
 boolean inF = true;
-float tempOffsetC = 0;
-// set to true if you want to connect to wifi. The display will show values only when the sensor has wifi connection
-boolean connectWIFI = true;
-boolean displayData = false;
-// Set timezone string according to https://www.gnu.org/software/libc/manual/html_node/TZ-Variable.html
-// Examples:
-//  Pacific Time: "PST8PDT"
-//  Eastern: "EST5EDT"
-//  Japanesse: "JST-9"
-//  Central Europe: "CET-1CEST,M3.5.0,M10.5.0/3"
+
+// set to true if you want to connect to wifi. You have 60 seconds to connect. Then it will go into an offline mode.
+boolean connectWIFI=true;
+
 #define TZ_INFO "PST8PDT"
 
-void setup() {
-  Serial.begin(9600);
+// CONFIGURATION END
 
-  display.init();
-  display.flipScreenVertically();
-  showTextRectangle("Init", String(ESP.getChipId(), HEX), true);
 
-  if (hasTVOC) {
-    if (SGP.isConnected()) {
-      Serial.println("Initializing SGP sensor");
-      SGP.begin();
-      if (SGP.measureTest()) {
-        Serial.println("SGP self-check complete");
-      } else {
-        Serial.println("SGP self-check failed");
-        Serial.print("SGP error code: ");
-        Serial.println(SGP.lastError());
-      }
-    } else {
-      Serial.println("SGP sensor not connected!");
-    }
+unsigned long currentMillis = 0;
+
+const int oledInterval = 5000;
+unsigned long previousOled = 0;
+
+const int sendToServerInterval = 60000;
+unsigned long previoussendToServer = 0;
+
+const int tvocInterval = 1000;
+unsigned long previousTVOC = 0;
+int TVOC = 0;
+
+const int co2Interval = 5000;
+unsigned long previousCo2 = 0;
+int Co2 = 0;
+
+const int pm25Interval = 5000;
+unsigned long previousPm25 = 0;
+int pm25 = 0;
+
+const int tempHumInterval = 2500;
+unsigned long previousTempHum = 0;
+float temp = 0;
+int hum = 0;
+
+void setup()
+{
+  Serial.begin(115200);
+
+  u8g2.begin();
+  updateOLED();
+
+    if (connectWIFI) {
+    connectToWifi();
+    timeSync(TZ_INFO, "pool.ntp.org", "time.nis.gov");
+    connectToInfluxDb();
   }
-  if (hasPM) ag.PMS_Init();
-  if (hasCO2) ag.CO2_Init();
-  if (hasSHT) ag.TMP_RH_Init(0x44);
 
-  if (connectWIFI) connectToWifi();
-  delay(2000);
-  // Accurate time is necessary for certificate validation and writing in batches
-  // For the fastest time sync find NTP servers in your area: https://www.pool.ntp.org/zone/
-  // Syncing progress and the time will be printed to Serial.
-  timeSync(TZ_INFO, "pool.ntp.org", "time.nis.gov");
-  // Check server connection
+  updateOLED2("Warming up the", "sensors.", "");
+
+  Serial.println(SGP.begin());
+  SGP.GenericReset();
+
+  ag.CO2_Init();
+  ag.PMS_Init();
+  ag.TMP_RH_Init(0x44);
+}
+
+
+void loop()
+{
+  currentMillis = millis();
+  //updateTVOC();
+  updateOLED();
+  updateCo2();
+  updatePm25();
+  updateTempHum();
+  sendToServer();
+}
+
+void updateTVOC()
+{
+    if (currentMillis - previousTVOC >= tvocInterval) {
+      previousTVOC += tvocInterval;
+      SGP.measure(true);
+      TVOC = SGP.getTVOC();
+      Serial.print("TVOC: ");
+      Serial.println(String(TVOC));
+    }
+}
+
+void updateCo2()
+{
+    if (currentMillis - previousCo2 >= co2Interval) {
+      previousCo2 += co2Interval;
+      Co2 = ag.getCO2_Raw();
+      Serial.print("CO2: ");
+      Serial.println(String(Co2));
+    }
+}
+
+void updatePm25()
+{
+    if (currentMillis - previousPm25 >= pm25Interval) {
+      previousPm25 += pm25Interval;
+      pm25 = ag.getPM2_Raw();
+      Serial.print("PM2.5: ");
+      Serial.println(String(pm25));
+    }
+}
+
+void updateTempHum()
+{
+    if (currentMillis - previousTempHum >= tempHumInterval) {
+      previousTempHum += tempHumInterval;
+      TMP_RH result = ag.periodicFetchData();
+      temp = result.t;
+      hum = result.rh;
+      Serial.print("Temp: ");
+      Serial.println(String(temp));
+    }
+}
+
+void updateOLED() {
+   if (currentMillis - previousOled >= oledInterval) {
+     previousOled += oledInterval;
+
+    String ln3;
+    String ln1 = "PM:" + String(pm25) +  " CO2:" + String(Co2);
+    String ln2 = "AQI:" + String(PM_TO_AQI_US(pm25)) + " TVOC:" + String(TVOC);
+
+      if (inF) {
+        ln3 = "F:" + String((temp* 9 / 5) + 32) + " H:" + String(hum)+"%";
+        } else {
+        ln3 = "C:" + String(temp) + " H:" + String(hum)+"%";
+       }
+     updateOLED2(ln1, ln2, ln3);
+   }
+}
+
+void updateOLED2(String ln1, String ln2, String ln3) {
+      char buf[9];
+          u8g2.firstPage();
+          u8g2.firstPage();
+          do {
+          u8g2.setFont(u8g2_font_t0_16_tf);
+          u8g2.drawStr(1, 10, String(ln1).c_str());
+          u8g2.drawStr(1, 30, String(ln2).c_str());
+          u8g2.drawStr(1, 50, String(ln3).c_str());
+            } while ( u8g2.nextPage() );
+}
+
+void sendToServer() {
+   if (currentMillis - previoussendToServer >= sendToServerInterval) {
+     previoussendToServer += sendToServerInterval;
+
+      if(WiFi.status()== WL_CONNECTED){
+        influxPoint.addField("tvoc", TVOC);
+        influxPoint.addField("temp", temp);
+        influxPoint.addField("rhum", hum);
+        influxPoint.addField("pm2", pm25);
+        influxPoint.addField("aqi", PM_TO_AQI_US(pm25));
+        influxPoint.addField("co2", Co2);
+        Serial.print("Writing to InfluxDB: ");
+        Serial.println(influxPoint.toLineProtocol());
+        if (!influxDbClient.writePoint(influxPoint)) {
+          Serial.print("InfluxDB write failed: ");
+          Serial.println(influxDbClient.getLastErrorMessage());
+        }
+      }
+      else {
+        Serial.println("WiFi Disconnected");
+      }
+   }
+}
+
+// Wifi Manager
+void connectToWifi() {
+   WiFiManager wifiManager;
+   //WiFi.disconnect(); //to delete previous saved hotspot
+   String HOTSPOT = "AG-" + String(ESP.getChipId(), HEX);
+   updateOLED2("60s to connect", "to Wifi Hotspot", HOTSPOT);
+   wifiManager.setTimeout(60);
+   if (!wifiManager.autoConnect((const char * ) HOTSPOT.c_str())) {
+     updateOLED2("booting into", "offline mode", "");
+     Serial.println("failed to connect and hit timeout");
+     delay(6000);
+   }
+}
+
+// InfluxDB
+void connectToInfluxDb() {
   if (influxDbClient.validateConnection()) {
     Serial.print("Connected to InfluxDB: ");
     Serial.println(influxDbClient.getServerUrl());
   } else {
     Serial.print("InfluxDB connection failed: ");
     Serial.println(influxDbClient.getLastErrorMessage());
-    while(true) {}
+    updateOLED2("Cannot connect", "to server", "");
+    delay(6000);
   }
-}
-
-void loop() {
-
-  if (!displayData) {
-    display.displayOff();
-  }
-
-  influxPoint.clearFields();
-
-  if (hasTVOC) SGP.measure(false);
-
-  if (hasPM) {
-    int PM2 = ag.getPM2_Raw();
-    influxPoint.addField("pm2", PM2);
-    influxPoint.addField("aqi", PM_TO_AQI_US(PM2));
-
-    if (inUSaqi) {
-      showTextRectangle("AQI", String(PM_TO_AQI_US(PM2)), false);
-    } else {
-      showTextRectangle("PM2", String(PM2), false);
-    }
-
-    delay(3000);
-
-  }
-
-  if (hasCO2) {
-    int CO2 = ag.getCO2_Raw();
-    // Sometimes get error codes (-1), not sure why.
-    if (CO2 > 0) influxPoint.addField("co2", CO2);
-    showTextRectangle("CO2", String(CO2), false);
-    delay(3000);
-  }
-
-  if (hasSHT) {
-    TMP_RH result = ag.periodicFetchData();
-    float actualTemp = result.t + tempOffsetC;
-    influxPoint.addField("temp", actualTemp);
-    influxPoint.addField("rhum", result.rh);
-
-    if (inF) {
-      showTextRectangle(String((actualTemp * 9 / 5) + 32), String(result.rh) + "%", false);
-    } else {
-      showTextRectangle(String(actualTemp), String(result.rh) + "%", false);
-    }
-
-    delay(3000);
-  }
-
-  if (hasTVOC) {
-    int TVOC = SGP.getTVOC();
-    influxPoint.addField("tvoc", TVOC);
-    showTextRectangle("TVOC", String(TVOC), false);
-    delay(3000);
-  }
-
-  // send payload
-  if (connectWIFI) {
-    // Print what are we exactly writing
-    Serial.print("Writing: ");
-    Serial.println(influxPoint.toLineProtocol());
-    // Write point
-    if (!influxDbClient.writePoint(influxPoint)) {
-      Serial.print("InfluxDB write failed: ");
-      Serial.println(influxDbClient.getLastErrorMessage());
-    }
-    delay(48000);
-  }
-}
-
-// DISPLAY
-void showTextRectangle(String ln1, String ln2, boolean small) {
-  display.clear();
-  display.setTextAlignment(TEXT_ALIGN_LEFT);
-  if (small) {
-    display.setFont(ArialMT_Plain_16);
-  } else {
-    display.setFont(ArialMT_Plain_24);
-  }
-  display.drawString(32, 16, ln1);
-  display.drawString(32, 36, ln2);
-  display.display();
-}
-
-// Wifi Manager
-void connectToWifi() {
-  WiFiManager wifiManager;
-  //WiFi.disconnect(); //to delete previous saved hotspot
-  String HOTSPOT = "AIRGRADIENT-" + String(ESP.getChipId(), HEX);
-  wifiManager.setTimeout(120);
-  if (!wifiManager.autoConnect((const char * ) HOTSPOT.c_str())) {
-    Serial.println("failed to connect and hit timeout");
-    delay(3000);
-    ESP.restart();
-    delay(5000);
-  }
-
 }
 
 // Calculate PM2.5 US AQI
