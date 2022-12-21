@@ -10,7 +10,6 @@ Kits (including a pre-soldered version) are available: https://www.airgradient.c
 The codes needs the following libraries installed:
 “WifiManager by tzapu, tablatronix” tested with version 2.0.11-beta
 “U8g2” by oliver tested with version 2.32.15
-“SGP30” by Rob Tilaart tested with Version 0.1.5
 
 Configuration:
 Please set in the code below the configuration parameters.
@@ -34,20 +33,13 @@ MIT License
 #include "arduino_secrets.h"
 #include <ESP8266HTTPClient.h>
 #include <WiFiClient.h>
-
-#include "SGP30.h"
 #include <U8g2lib.h>
 
 AirGradient ag = AirGradient();
-SGP30 SGP;
 InfluxDBClient influxDbClient(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN, InfluxDbCloud2CACert);
 Point influxPoint("airgradient");
 
-// Display bottom right
-U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-
-// Replace above if you have display on top left
-//U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R3, /* reset=*/ U8X8_PIN_NONE);
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R2, /* reset=*/ U8X8_PIN_NONE);
 
 
 // CONFIGURATION START
@@ -68,12 +60,8 @@ unsigned long currentMillis = 0;
 const int oledInterval = 5000;
 unsigned long previousOled = 0;
 
-const int sendToServerInterval = 60000;
+const int sendToServerInterval = 10000;
 unsigned long previoussendToServer = 0;
-
-const int tvocInterval = 1000;
-unsigned long previousTVOC = 0;
-int TVOC = 0;
 
 const int co2Interval = 5000;
 unsigned long previousCo2 = 0;
@@ -103,9 +91,6 @@ void setup()
 
   updateOLED2("Warming up the", "sensors.", "");
 
-  Serial.println(SGP.begin());
-  SGP.GenericReset();
-
   ag.CO2_Init();
   ag.PMS_Init();
   ag.TMP_RH_Init(0x44);
@@ -115,7 +100,6 @@ void setup()
 void loop()
 {
   currentMillis = millis();
-  //updateTVOC();
   updateOLED();
   updateCo2();
   updatePm25();
@@ -123,23 +107,11 @@ void loop()
   sendToServer();
 }
 
-void updateTVOC()
-{
-    if (currentMillis - previousTVOC >= tvocInterval) {
-      previousTVOC += tvocInterval;
-      SGP.measure(true);
-      TVOC = SGP.getTVOC();
-      Serial.print("TVOC: ");
-      Serial.println(String(TVOC));
-    }
-}
-
 void updateCo2()
 {
     if (currentMillis - previousCo2 >= co2Interval) {
       previousCo2 += co2Interval;
       Co2 = ag.getCO2_Raw();
-      Serial.print("CO2: ");
       Serial.println(String(Co2));
     }
 }
@@ -149,7 +121,6 @@ void updatePm25()
     if (currentMillis - previousPm25 >= pm25Interval) {
       previousPm25 += pm25Interval;
       pm25 = ag.getPM2_Raw();
-      Serial.print("PM2.5: ");
       Serial.println(String(pm25));
     }
 }
@@ -161,7 +132,6 @@ void updateTempHum()
       TMP_RH result = ag.periodicFetchData();
       temp = result.t;
       hum = result.rh;
-      Serial.print("Temp: ");
       Serial.println(String(temp));
     }
 }
@@ -171,8 +141,8 @@ void updateOLED() {
      previousOled += oledInterval;
 
     String ln3;
-    String ln1 = "PM:" + String(pm25) +  " CO2:" + String(Co2);
-    String ln2 = "AQI:" + String(PM_TO_AQI_US(pm25)) + " TVOC:" + String(TVOC);
+    String ln1 = "PM:" + String(pm25) +  " AQI:" + String(PM_TO_AQI_US(pm25)) ;
+    String ln2 = "CO2:" + String(Co2);
 
       if (inF) {
         ln3 = "F:" + String((temp* 9 / 5) + 32) + " H:" + String(hum)+"%";
@@ -200,7 +170,6 @@ void sendToServer() {
      previoussendToServer += sendToServerInterval;
 
       if(WiFi.status()== WL_CONNECTED){
-        influxPoint.addField("tvoc", TVOC);
         influxPoint.addField("temp", temp);
         influxPoint.addField("rhum", hum);
         influxPoint.addField("pm2", pm25);
@@ -220,7 +189,7 @@ void sendToServer() {
 }
 
 // Wifi Manager
-void connectToWifi() {
+ void connectToWifi() {
    WiFiManager wifiManager;
    //WiFi.disconnect(); //to delete previous saved hotspot
    String HOTSPOT = "AG-" + String(ESP.getChipId(), HEX);
