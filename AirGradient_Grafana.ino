@@ -1,5 +1,5 @@
 /*
-This is the code for the AirGradient DIY PRO Air Quality Sensor with an ESP8266 Microcontroller.
+This is the code for the AirGradient DIY PRO Air Quality Sensor with an ESP8266 Microcontroller with the SGP40 TVOC module from AirGradient.
 
 It is a high quality sensor showing PM2.5, CO2, Temperature and Humidity on a small display and can send data over Wifi.
 
@@ -10,6 +10,7 @@ Kits (including a pre-soldered version) are available: https://www.airgradient.c
 The codes needs the following libraries installed:
 “WifiManager by tzapu, tablatronix” tested with version 2.0.11-beta
 “U8g2” by oliver tested with version 2.32.15
+“DFRobot_SGP40” by DFRobot tested with Version 1.0.3
 
 Configuration:
 Please set in the code below the configuration parameters.
@@ -27,17 +28,20 @@ MIT License
 #include <AirGradient.h>
 #include <WiFiManager.h>
 #include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <WiFiClient.h>
 #include <InfluxDbClient.h>
 #include <InfluxDbCloud.h>
 // InfluxDB UI -> Load Data -> Client Libraries -> Arduino, choose correct bucket and copy resulting config
 #include "arduino_secrets.h"
-#include <ESP8266HTTPClient.h>
-#include <WiFiClient.h>
+
+#include <DFRobot_SGP40.h>
 #include <U8g2lib.h>
 
 AirGradient ag = AirGradient();
 InfluxDBClient influxDbClient(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN, InfluxDbCloud2CACert);
 Point influxPoint("airgradient");
+DFRobot_SGP40    sgp40;
 
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R2, /* reset=*/ U8X8_PIN_NONE);
 
@@ -62,6 +66,10 @@ unsigned long previousOled = 0;
 
 const int sendToServerInterval = 10000;
 unsigned long previoussendToServer = 0;
+
+const int tvocInterval = 1000;
+unsigned long previousTVOC = 0;
+int TVOC = 0;
 
 const int co2Interval = 5000;
 unsigned long previousCo2 = 0;
@@ -91,6 +99,7 @@ void setup()
 
   updateOLED2("Warming up the", "sensors.", "");
 
+  sgp40.begin();
   ag.CO2_Init();
   ag.PMS_Init();
   ag.TMP_RH_Init(0x44);
@@ -100,11 +109,21 @@ void setup()
 void loop()
 {
   currentMillis = millis();
+  updateTVOC();
   updateOLED();
   updateCo2();
   updatePm25();
   updateTempHum();
   sendToServer();
+}
+
+void updateTVOC()
+{
+    if (currentMillis - previousTVOC >= tvocInterval) {
+      previousTVOC += tvocInterval;
+      TVOC = sgp40.getVoclndex();
+      Serial.println(String(TVOC));
+    }
 }
 
 void updateCo2()
@@ -141,8 +160,8 @@ void updateOLED() {
      previousOled += oledInterval;
 
     String ln3;
-    String ln1 = "PM:" + String(pm25) +  " AQI:" + String(PM_TO_AQI_US(pm25)) ;
-    String ln2 = "CO2:" + String(Co2);
+    String ln1 = "PM:" + String(pm25) +  " CO2:" + String(Co2);
+    String ln2 = "AQI:" + String(PM_TO_AQI_US(pm25)) + " TVOC:" + String(TVOC);
 
       if (inF) {
         ln3 = "F:" + String((temp* 9 / 5) + 32) + " H:" + String(hum)+"%";
@@ -175,6 +194,7 @@ void sendToServer() {
         influxPoint.addField("pm2", pm25);
         influxPoint.addField("aqi", PM_TO_AQI_US(pm25));
         influxPoint.addField("co2", Co2);
+        influxPoint.addField("tvoc", TVOC);
         Serial.print("Writing to InfluxDB: ");
         Serial.println(influxPoint.toLineProtocol());
         if (!influxDbClient.writePoint(influxPoint)) {
