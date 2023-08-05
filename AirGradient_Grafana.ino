@@ -68,10 +68,10 @@ unsigned long currentMillis = 0;
 const int oledInterval = 5000;
 unsigned long previousOled = 0;
 
-const int sendToServerInterval = 10000;
+const int sendToServerInterval = 60000;
 unsigned long previoussendToServer = 0;
 
-const int tvocInterval = 1000;
+const int tvocInterval = 5000;
 unsigned long previousTVOC = 0;
 int TVOC = 0;
 
@@ -83,7 +83,7 @@ const int pm25Interval = 5000;
 unsigned long previousPm25 = 0;
 int pm25 = 0;
 
-const int tempHumInterval = 2500;
+const int tempHumInterval = 5000;
 unsigned long previousTempHum = 0;
 float temp = 0;
 int hum = 0;
